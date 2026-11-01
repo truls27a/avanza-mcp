@@ -126,15 +126,6 @@ Read this before you run it.
   fails: choosing a profile isn't supported yet.
 - Endpoints and response shapes are reverse-engineered and may change without notice.
 
-## Development
-
-```sh
-uv sync
-uv run pytest
-```
-
-The tests run offline against a fake Avanza (`httpx.MockTransport`) and never touch a real account.
-
 ## License
 
 [MIT](LICENSE)

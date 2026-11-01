@@ -10,7 +10,6 @@ from importlib.metadata import version
 from importlib.resources import files
 from typing import Annotated, Literal
 
-import httpx
 import qrcode
 from fastmcp import FastMCP
 from fastmcp.apps.config import UI_MIME_TYPE, AppConfig
@@ -72,10 +71,8 @@ def _day(value: str | None, name: str) -> date | None:
         raise ToolError(f"{name} must be YYYY-MM-DD") from None
 
 
-def create_server(data_dir: str, *, token: str | None = None,
-                  transport: httpx.AsyncBaseTransport | None = None) -> FastMCP:
-    """Build the server. ``transport`` replaces the network in tests."""
-    avanza = Avanza(Store(data_dir), transport)
+def create_server(data_dir: str, *, token: str | None = None) -> FastMCP:
+    avanza = Avanza(Store(data_dir))
     login = BankIDLogin(avanza)
 
     @asynccontextmanager
@@ -88,7 +85,6 @@ def create_server(data_dir: str, *, token: str | None = None,
 
     mcp = FastMCP("Avanza", instructions=INSTRUCTIONS, lifespan=lifespan, mask_error_details=True,
                   auth=BearerToken(token) if token else None)
-    mcp.avanza, mcp.bankid = avanza, login  # for tests and embedding
 
     async def run(coro):
         try:
