@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> None:
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # request URLs can contain the Avanza customer id
     token = os.environ.get("AVANZA_MCP_TOKEN") or None
     if args.transport == "http" and not token and not _is_loopback(args.host) and not args.allow_unauthenticated:
         p.error(f"refusing to serve {args.host} without authentication: set AVANZA_MCP_TOKEN, "

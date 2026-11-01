@@ -49,7 +49,7 @@ the market-data tools still work, but there is no way to log in.
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 ```sh
-git clone <this repo> avanza-mcp
+git clone https://github.com/truls27a/avanza-mcp.git
 cd avanza-mcp
 uv sync
 uv run avanza-mcp --help
