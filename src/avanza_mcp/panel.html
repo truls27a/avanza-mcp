@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{
+  --bg:var(--color-background-primary,#fff);
+  --fg:var(--color-text-primary,#0d0d0d);
+  --muted:var(--color-text-secondary,#5d5d5d);
+  --line:var(--color-border-primary,rgba(13,13,13,.1));
+  --hover:rgba(13,13,13,.05);
+  --font:var(--font-sans,ui-sans-serif,-apple-system,system-ui,"Segoe UI",Helvetica,Arial,sans-serif);
+  color-scheme:light;
+}
+:root[data-theme=dark]{
+  --bg:var(--color-background-primary,#212121);
+  --fg:var(--color-text-primary,#ececec);
+  --muted:var(--color-text-secondary,#afafaf);
+  --line:var(--color-border-primary,rgba(255,255,255,.12));
+  --hover:rgba(255,255,255,.08);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent}
+body{padding:20px 16px;font:14px/1.45 var(--font);color:var(--fg);display:flex;flex-direction:column;align-items:center;gap:14px;text-align:center}
+.title{font-size:16px;font-weight:600;margin:0}
+.sub{color:var(--muted);margin:-8px 0 0;min-height:1.45em}
+#qr{display:none;background:#fff;padding:12px;border-radius:16px;border:1px solid var(--line);width:216px}
+#qr svg{display:block;width:100%;height:auto}
+.check{display:none;width:40px;height:40px;border-radius:50%;background:var(--fg);color:var(--bg);font-size:22px;line-height:40px}
+.actions{display:flex;flex-direction:column;align-items:center;gap:6px;width:100%;max-width:280px}
+button{font:inherit;font-weight:500;border:0;border-radius:999px;padding:9px 18px;cursor:pointer;width:100%}
+.primary{background:var(--fg);color:var(--bg)}
+.primary:hover{opacity:.85}
+.link{background:transparent;color:var(--muted);width:auto;padding:6px 12px}
+.link:hover{background:var(--hover);color:var(--fg)}
+button:disabled{opacity:.5;cursor:default}
+.hidden{display:none!important}
+</style></head><body>
+<p class="title" id="title">Log in to Avanza</p>
+<p class="sub" id="sub"></p>
+<div class="check" id="check">✓</div>
+<div id="qr" aria-label="BankID QR code"></div>
+<div class="actions">
+  <button class="primary hidden" id="primary"></button>
+  <button class="link hidden" id="secondary"></button>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const title = $('title'), sub = $('sub'), qrEl = $('qr'), check = $('check'), primary = $('primary'), secondary = $('secondary');
+const mobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+const pending = new Map();
+let nextId = 1, timer = null, lastMode = mobile ? 'app' : 'qr', lastUrl = null;
+
+// Host bridge (MCP Apps: JSON-RPC over postMessage)
+function post(msg) { window.parent.postMessage({ jsonrpc: '2.0', ...msg }, '*'); }
+function request(method, params, timeoutMs = 15000) {
+  const id = nextId++;
+  post({ id, method, params });
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => { pending.delete(id); reject(new Error('timeout: ' + method)); }, timeoutMs);
+    pending.set(id, { resolve: (v) => { clearTimeout(t); resolve(v); }, reject: (e) => { clearTimeout(t); reject(e); } });
+  });
+}
+function applyHost(ctx) {
+  if (!ctx) return;
+  if (ctx.theme) document.documentElement.dataset.theme = ctx.theme;
+  const vars = ctx.styles && ctx.styles.variables;
+  if (vars) for (const [k, v] of Object.entries(vars)) if (v) document.documentElement.style.setProperty(k, v);
+}
+window.addEventListener('message', (event) => {
+  if (event.source !== window.parent) return;
+  const m = event.data;
+  if (!m || m.jsonrpc !== '2.0') return;
+  if (m.id !== undefined && pending.has(m.id)) {
+    const p = pending.get(m.id); pending.delete(m.id);
+    m.error ? p.reject(m.error) : p.resolve(m.result);
+  } else if (m.method === 'ui/notifications/host-context-changed') {
+    applyHost(m.params);
+  }
+}, { passive: true });
+function payload(result) {
+  if (!result) return {};
+  let sc = result.structuredContent;
+  if (sc && sc.result && sc.status === undefined) sc = sc.result;
+  if (sc) return sc;
+  try { return JSON.parse(result.content[0].text); } catch (e) { return {}; }
+}
+async function callTool(name, args) {
+  try {
+    return payload(await request('tools/call', { name, arguments: args || {} }));
+  } catch (e) {
+    if (window.openai && window.openai.callTool) return payload(await window.openai.callTool(name, args || {}));
+    throw e;
+  }
+}
+function openLink(url) {
+  request('ui/open-link', { url }).catch(() => {
+    if (window.openai && window.openai.openExternal) window.openai.openExternal({ href: url });
+  });
+}
+
+// View
+function button(el, label, onclick) {
+  if (!label) { el.classList.add('hidden'); return; }
+  el.textContent = label; el.onclick = onclick; el.disabled = false; el.classList.remove('hidden');
+}
+const other = (mode) => mode === 'qr'
+  ? ['Open BankID on this device', () => start('app')]
+  : ['Show QR code instead', () => start('qr')];
+const FAILED = {
+  expired: "BankID didn't open in time.",
+  cancelled: 'Login cancelled.',
+  timed_out: 'The login timed out.',
+  failed: 'Something went wrong.',
+};
+function show(st) {
+  const s = st.status, waiting = s === 'waiting' || s === 'starting';
+  const qr = waiting && st.qr_svg;
+  qrEl.style.display = qr ? 'block' : 'none';
+  if (qr) qrEl.innerHTML = st.qr_svg; else qrEl.innerHTML = '';
+  check.style.display = s === 'done' ? 'block' : 'none';
+  title.textContent = s === 'done' ? 'Logged in to Avanza' : 'Log in to Avanza';
+  if (st.app_url) lastUrl = st.app_url;
+  if (waiting && st.mode === 'qr') {
+    sub.textContent = 'Scan with the BankID app';
+    button(primary, null); button(secondary, ...other('qr'));
+  } else if (waiting) {
+    sub.textContent = 'Approve the login in BankID';
+    button(primary, 'Open BankID', () => lastUrl && openLink(lastUrl)); button(secondary, ...other('app'));
+  } else if (s === 'done') {
+    sub.textContent = 'You can return to the chat.';
+    button(primary, null); button(secondary, null);
+  } else if (s === 'connected') {
+    sub.textContent = 'Already logged in.';
+    button(primary, null); button(secondary, 'Log in again', () => start(lastMode));
+  } else if (FAILED[s]) {
+    sub.textContent = FAILED[s];
+    button(primary, 'Try again', () => start(lastMode)); button(secondary, ...other(lastMode));
+  } else {
+    sub.textContent = mobile ? 'Use BankID on this device' : 'Use BankID on your phone';
+    button(primary, mobile ? 'Open BankID' : 'Show QR code', () => start(lastMode));
+    button(secondary, ...other(lastMode));
+  }
+  return waiting;
+}
+async function poll() {
+  try {
+    if (show(await callTool('bankid_login_poll'))) timer = setTimeout(poll, 1000);
+  } catch (e) {
+    show({ status: 'failed' });
+  }
+}
+async function start(mode) {
+  clearTimeout(timer); lastMode = mode;
+  primary.disabled = secondary.disabled = true;
+  sub.textContent = 'Starting BankID…';
+  try {
+    const st = await callTool('bankid_login_start', { mode });
+    if (mode === 'app' && st.app_url) openLink(st.app_url);
+    if (show(st)) timer = setTimeout(poll, 1000);
+  } catch (e) {
+    show({ status: 'failed' });
+  }
+}
+
+new ResizeObserver(() => {
+  post({ method: 'ui/notifications/size-changed',
+         params: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight } });
+}).observe(document.body);
+
+(async () => {
+  if (window.matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark';
+  try {
+    const init = await request('ui/initialize', { protocolVersion: '2026-01-26',
+      appInfo: { name: 'avanza-mcp-login', version: '1' }, appCapabilities: {} }, 5000);
+    applyHost(init && init.hostContext);
+    post({ method: 'ui/notifications/initialized', params: {} });
+  } catch (e) { /* hosts without the handshake: keep defaults */ }
+  try {
+    const st = await callTool('bankid_login_poll');
+    if (st.connected && st.status !== 'waiting') { show({ status: 'connected' }); return; }
+    if (st.status === 'waiting') { lastMode = st.mode; if (show(st)) timer = setTimeout(poll, 1000); return; }
+  } catch (e) { /* fall through */ }
+  if (mobile) show({ status: 'idle' }); else start('qr');
+})();
+</script></body></html>
